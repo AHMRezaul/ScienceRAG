@@ -14,10 +14,20 @@ from colorama import Fore, Style
 warnings.filterwarnings("ignore")
 import shutil
 import os
+from synonym_finder import generate_synonymous_sentences
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from accelerate import Accelerator
+import os
+import requests
+from requests.exceptions import RequestException, ConnectionError
+import psutil
+
+
 
 # Set your OpenAI API key
 client = OpenAI(
-    api_key='your_key_here'  # Replace with your actual key
+    api_key='your-open-ai-key'  
 )
 
 
@@ -64,6 +74,89 @@ def fetch_arxiv_papers_api(queries, max_results=3):
         except requests.exceptions.RequestException as e:
             print(f"Error fetching data: {e}")
     return pdf_links
+
+
+
+
+
+def search_and_download_pmc_pdfs(query, max_results=3, save_directory="downloaded_pdfs"):
+    """
+    Search PubMed Central (PMC) for articles based on a query, extract PMCIDs, and download their PDFs.
+
+    Args:
+        query (str): The search query.
+        max_results (int): Maximum number of PMCIDs to retrieve.
+        save_directory (str): Directory to save the downloaded PDFs.
+
+    Returns:
+        None
+    """
+    # Ensure the save directory exists
+    if not os.path.exists(save_directory):
+        os.makedirs(save_directory)
+
+    # Step 1: Search PMC and extract PMCIDs
+    base_search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    search_params = {
+        "db": "pmc",          # Search in PubMed Central
+        "term": query,        # The search query
+        "retmax": max_results,  # Number of results to retrieve
+        "retmode": "json"     # Return results in JSON format
+    }
+
+    #print(f"Searching PubMed Central for query: {query}")
+    try:
+        # Send the GET request to search for articles
+        search_response = requests.get(base_search_url, params=search_params)
+        search_response.raise_for_status()  # Check for HTTP errors
+
+        # Parse the JSON response to get PMCIDs
+        search_data = search_response.json()
+        pmc_ids = ["PMC" + pmcid for pmcid in search_data.get("esearchresult", {}).get("idlist", [])]
+
+        if not pmc_ids:
+            #print("No articles found for the given query.")
+            return
+
+        #print(f"Retrieved PMCIDs: {pmc_ids}")
+
+    except RequestException as e:
+        #print(f"Error during PMC search: {e}")
+        return
+
+    # Step 2: Download PDFs for each PMCID
+    base_pdf_url = 'https://www.ncbi.nlm.nih.gov/pmc/articles/'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+
+    for pmc_id in pmc_ids:
+        try:
+            pdf_url = f"{base_pdf_url}{pmc_id}/pdf"
+            pdf_response = requests.get(pdf_url, headers=headers, stream=True)
+            pdf_response.raise_for_status()  # Check for request errors
+
+            pdf_filename = os.path.join(save_directory, f"{pmc_id}.pdf")
+            with open(pdf_filename, 'wb') as pdf_file:
+                for chunk in pdf_response.iter_content(chunk_size=1024):
+                    if chunk:
+                        pdf_file.write(chunk)
+
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTPError for {pmc_id}: {e}")
+            continue  # Skip to the next PMCID
+        except Exception as e:
+            print(f"Error for {pmc_id}: {e}")
+            continue
+
+ 
+
+
+
+
+
+
+
 
 def download_pdfs(pdf_links, save_dir="downloaded_pdfs"):
     """
@@ -173,10 +266,11 @@ def process_pdfs_and_store_in_chroma(directory, wikipedia_content, chroma_persis
     Returns:
         Chroma: The initialized vector store.
     """
-    embeddings = OpenAIEmbeddings(openai_api_key="your_key_here")
+    embeddings = OpenAIEmbeddings(openai_api_key="your-open-ai-key")
     vector_store = Chroma(persist_directory=chroma_persist_dir, embedding_function=embeddings)
 
     for file_name in os.listdir(directory):
+        #print(file_name)
         if file_name.endswith(".pdf"):
             file_path = os.path.join(directory, file_name)
             #print(f"Processing {file_name}...")
@@ -244,7 +338,7 @@ def retrieve_relevant_content(query, vector_store, top_k=50,deduplicate=False):
 
 
 client = OpenAI(
-  api_key="your_key_here"  # Replace with your actual key
+  api_key="your-open-ai-key"  # Replace with your actual key
   # this is also the default, it can be omitted
 )
 
@@ -353,60 +447,132 @@ def generate_answer_from_combined_chunks(query, results, chunk_size=2500, chunk_
     #print(f"Combined context length: {len(combined_context)} characters")
 
     # Step 3: Pass the combined context to the GPT model
-    answer = call_gpt_for_combined_context(query, combined_context)
+    answer = call_llama_for_combined_context(query, combined_context)
     return answer
 
-# Main function to process the entire flow
-"""
-def main():
-    print(f"{Fore.GREEN}ScienceRAG: Hi! What would you like to ask today?{Style.RESET_ALL}")
-    query = input(f"{Fore.BLUE}{'You:'.rjust(30)} {Style.RESET_ALL}")
+def force_delete_folder(folder_path):
+    """
+    Forcefully delete a folder, ensuring all files are unlocked and removed.
+    """
+    if os.path.exists(folder_path):
+        try:
+            # Terminate processes accessing files in the folder
+            for proc in psutil.process_iter():
+                try:
+                    for open_file in proc.open_files():
+                        if folder_path in open_file.path:
+                            proc.terminate()  # Kill the process
+                            proc.wait()       # Wait for process to terminate
+                except Exception:
+                    pass  # Ignore errors for processes we can't access
+            
+            # Try deleting the folder
+            shutil.rmtree(folder_path)
+            print(f"Deleted folder: {folder_path}")
+        except Exception as e:
+            print(f"Error forcefully deleting folder {folder_path}: {e}")
+    else:
+        print(f"Folder {folder_path} does not exist.")
 
-    
-    queries = [
-        
-        query
-    ]
-    unique_pdf_links = fetch_arxiv_papers_api(queries)
-    
-    download_pdfs(unique_pdf_links)
-
-    
-    wikipedia_content = load_wikipedia_content(queries[0], limit_sections=5)
-
-    
-
-    pdf_directory = "downloaded_pdfs"  # Directory containing downloaded PDFs
-    chroma_directory = "chroma_db"    # Directory to store the Chroma database
-
-    # Step 1: Process PDFs and store in Chroma DB
-    vector_store = process_pdfs_and_store_in_chroma(pdf_directory, wikipedia_content,chroma_directory)
-
-    
-    results = retrieve_relevant_content(query, vector_store, top_k=50)
-
-    
-
-    # Generate the answer using the combined chunks
-    #print(f"\nQuery: {query}")
-    final_answer = generate_answer_from_combined_chunks(query, results)
-
-    print(f"{Fore.GREEN}ScienceRAG: {final_answer}?{Style.RESET_ALL}")
-    #print(final_answer)
-"""
 def cleanup_folders():
     """
-    Deletes the `downloaded_pdfs` and `chroma_db` folders if they exist.
+    Forcefully deletes the `downloaded_pdfs` and `chroma_db` folders if they exist.
     """
     folders_to_delete = ["downloaded_pdfs", "chroma_db"]
 
     for folder in folders_to_delete:
-        if os.path.exists(folder):
-            try:
-                shutil.rmtree(folder)  # Delete the folder and all its contents
-                print(f"Deleted folder: {folder}")
-            except Exception as e:
-                print(f"Error deleting folder {folder}: {e}")
+        force_delete_folder(folder)
+
+
+# Initialize LLaMA model and tokenizer
+def initialize_llama(model_path, cache_dir, token):
+    """
+    Initializes the LLaMA 3.1 model and tokenizer.
+
+    Args:
+        model_path (str): Path to the model.
+        cache_dir (str): Cache directory for loading the model.
+        token (str): Hugging Face token for authentication.
+
+    Returns:
+        tuple: Tokenizer, model, device, and generation arguments.
+    """
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        cache_dir=cache_dir,
+        token=token
+    )
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Initialize accelerator and device
+    accelerator = Accelerator()
+    device = accelerator.device
+
+    # Load model
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        cache_dir=cache_dir,
+        device_map="auto",
+        offload_folder="offload",
+        torch_dtype=torch.bfloat16,
+        token=token
+    )
+
+    # Define generation arguments
+    generation_kwargs = {
+        "min_length": -1,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "do_sample": True,
+        "pad_token_id": tokenizer.eos_token_id,
+        "max_length": 2000
+    }
+
+    return tokenizer, model, device, generation_kwargs
+
+# Function to call LLaMA for combined context
+def call_llama_for_combined_context(query, combined_context, tokenizer, model, device, generation_kwargs):
+    """
+    Calls the LLaMA 3.1 model with a query and combined context to generate a response.
+
+    Args:
+        query (str): The query to be answered.
+        combined_context (str): The combined content to provide context.
+        tokenizer (AutoTokenizer): Tokenizer for the LLaMA model.
+        model (AutoModelForCausalLM): LLaMA model for inference.
+        device (torch.device): Device for computation (CPU/GPU).
+        generation_kwargs (dict): Arguments for the generation process.
+
+    Returns:
+        str: The model's response.
+    """
+    try:
+        # Define the system prompt with context and query
+        prompt = (
+            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
+            f"You are a knowledgeable and helpful assistant. <|eot_id|><|start_header_id|>"
+            f"user<|end_header_id|>\n\nBased on the following content, answer the query clearly and concisely.\n\n"
+            f"Content:\n{combined_context}\n\nQuery: {query}\n\nAnswer:<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+        )
+
+        # Tokenize the prompt
+        query_encoding = tokenizer.encode(prompt)
+
+        # Generate the response
+        response_tensor = model.generate(
+            torch.tensor(query_encoding).unsqueeze(dim=0).to(device),
+            **generation_kwargs
+        ).squeeze()[len(query_encoding):]
+
+        # Decode the response
+        response = tokenizer.decode(response_tensor, skip_special_tokens=True)
+        return response.strip()
+
+    except Exception as e:
+        print(f"Error during LLaMA inference: {e}")
+        return ""
+
 
 
 def main():
@@ -433,10 +599,18 @@ def main():
         context.append({"role": "user", "content": query})
 
         # Fetch relevant documents and process content for retrieval
-        queries = [query]
+        synonymous_queries = generate_synonymous_sentences(query, max_variations=3)
+        synonymous_queries.append(query)
+        #print(synonymous_queries)
+        queries = synonymous_queries
         unique_pdf_links = fetch_arxiv_papers_api(queries)
+
+        search_and_download_pmc_pdfs(query)
+
+        # Downlaod the PDFs
         download_pdfs(unique_pdf_links)
-        wikipedia_content = load_wikipedia_content(queries[0], limit_sections=5)
+        wikipedia_content = load_wikipedia_content(query, limit_sections=5)
+        #print(wikipedia_content)
         
         # If vector_store is not already initialized, process PDFs and Wikipedia content
         if vector_store is None:
@@ -449,13 +623,27 @@ def main():
         combined_context = "\n".join(
             f"{msg['role'].capitalize()}: {msg['content']}" for msg in context
         )
-        final_answer = generate_answer_from_combined_chunks(combined_context, results)
+        model_path = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        cache_dir = "F:\Llama\cache"
+        token = "your-llama-token" # Replace with your actual token  
+
+        tokenizer, model, device, generation_kwargs = initialize_llama(model_path, cache_dir, token)
+
+        final_answer = call_llama_for_combined_context(
+            query=query,
+            combined_context=combined_context,
+            tokenizer=tokenizer,
+            model=model,
+            device=device,
+            generation_kwargs=generation_kwargs
+        )
 
         # Add the model's response to the context
         context.append({"role": "assistant", "content": final_answer})
 
         # Display the chatbot's response
         print(f"{Fore.GREEN}ScienceRAG: {final_answer}{Style.RESET_ALL}")
+        
     cleanup_folders()
 
     

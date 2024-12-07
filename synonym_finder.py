@@ -4,12 +4,20 @@ from nltk.tokenize import word_tokenize
 from nltk.tag import pos_tag
 from itertools import product
 import random
+from nltk.tag.perceptron import PerceptronTagger
+
+# Force the PerceptronTagger to use the default "averaged_perceptron_tagger"
+PerceptronTagger.lang = "default"
+
+
+
 
 # Ensure NLTK data is downloaded
-nltk.download('punkt', quiet=True)
-nltk.download('averaged_perceptron_tagger', quiet=True)
-nltk.download('wordnet', quiet=True)
-nltk.download('omw-1.4', quiet=True)
+#nltk.data.path.append('/nltk_data')
+#nltk.download('punkt')
+#nltk.download('averaged_perceptron_tagger')  # Fix here
+#nltk.download('wordnet')
+#nltk.download('omw-1.4')
 
 def get_synonyms(word, pos):
     """Get synonyms for a word based on its part of speech."""
@@ -41,7 +49,7 @@ def pos_to_wordnet(treebank_tag):
     else:
         return None
 
-def generate_synonymous_sentences(sentence, max_variations=10):
+def generate_synonymous_sentences(sentence, max_variations=3):
     """Generate multiple synonymous versions of the input sentence."""
     # Tokenize and get POS tags
     tokens = word_tokenize(sentence)
@@ -73,3 +81,32 @@ def generate_synonymous_sentences(sentence, max_variations=10):
         sentences.remove(sentence)
     
     return sentences
+def main():
+    print("Welcome to the Synonym Generator!")
+    print("Enter a sentence to generate synonymous versions (or type '\\exit' to quit):")
+    
+    
+    # Get user input
+    sentence = "I am a struggling PhD student"
+    
+    
+    
+        
+    
+    # Generate synonymous sentences
+    try:
+        print("\nGenerating synonymous sentences...")
+        variations = generate_synonymous_sentences(sentence, max_variations=5)
+        
+        if variations:
+            print("\nGenerated Variations:")
+            for i, variation in enumerate(variations, 1):
+                print(f"{i}. {variation}")
+        else:
+            print("No synonymous sentences could be generated.")
+    
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+if __name__ == "__main__":
+    main()
